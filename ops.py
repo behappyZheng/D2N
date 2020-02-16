@@ -169,30 +169,6 @@ def fully_conneted_pretrain(input, num_in, num_out, name, Activation=None, paddi
         elif Activation == None:
             return act
 
-def DynFilter(x, F, filter_size):
-    '''
-    Dynamic filtering
-
-    3D input x: (b, t, h, w)
-          F: (b, h, w, tower_depth, output_depth)
-          filter_shape (ft, fh, fw)
-
-    input x: (b, h, w)
-          F: (b, h, w, tower_depth, output_depth)
-          filter_shape (fh, fw)
-
-    '''
-    # make tower
-    filter_localexpand_np = np.reshape(np.eye(np.prod(filter_size), np.prod(filter_size)),
-                                       (filter_size[1], filter_size[2], filter_size[0], np.prod(filter_size)))
-
-    filter_localexpand = tf.Variable(filter_localexpand_np, trainable=False, dtype='float32',name='filter_localexpand')
-    x_localexpand = tf.nn.conv2d(x, filter_localexpand, [1,1,1,1], 'SAME') # b, h, w, 1*5*5
-    x_localexpand = tf.expand_dims(x_localexpand, axis=3)  # b, h, w, 1, 1*5*5
-    x = tf.matmul(x_localexpand, F) # b, h, w, 1, R*R
-    x = tf.squeeze(x, axis=3) # b, h, w, R*R
-
-    return x
 
 ##################################################################################
 # Unet
@@ -292,36 +268,6 @@ def mis_resblock(x_init, z, channels, use_bias=True, sn=False, scope='mis_resblo
 
         return x + x_init
 
-def multidomain_resblock(x_init, y, z, channels, use_bias=True, sn=False, scope='multidomain_resblock') :
-    with tf.variable_scope(scope) :
-        y = tf.reshape(y, shape=[-1, 1, 1, y.shape[-1]])
-        y = tf.tile(y, multiples=[1, x_init.shape[1], x_init.shape[2], 1])
-        z = tf.reshape(z, shape=[-1, 1, 1, z.shape[-1]])
-        z = tf.tile(z, multiples=[1, x_init.shape[1], x_init.shape[2], 1]) # expand
-
-        with tf.variable_scope('mis1') :
-            x = conv(x_init, channels, kernel=3, stride=1, pad=1, pad_type='reflect', use_bias=use_bias, sn=sn, scope='conv3x3')
-            x = instance_norm(x)
-
-            x = tf.concat([x, y, z], axis=-1)
-            x = conv(x, channels * 2, kernel=1, stride=1, use_bias=use_bias, sn=sn, scope='conv1x1_0')
-            x = relu(x)
-
-            x = conv(x, channels, kernel=1, stride=1, use_bias=use_bias, sn=sn, scope='conv1x1_1')
-            x = relu(x)
-
-        with tf.variable_scope('mis2') :
-            x = conv(x, channels, kernel=3, stride=1, pad=1, pad_type='reflect', use_bias=use_bias, sn=sn, scope='conv3x3')
-            x = instance_norm(x)
-
-            x = tf.concat([x, y, z], axis=-1)
-            x = conv(x, channels * 2, kernel=1, stride=1, use_bias=use_bias, sn=sn, scope='conv1x1_0')
-            x = relu(x)
-
-            x = conv(x, channels, kernel=1, stride=1, use_bias=use_bias, sn=sn, scope='conv1x1_1')
-            x = relu(x)
-
-        return x + x_init
 def avg_conv(x, channels, use_bias=True, sn=False, scope='avg_conv') :
     with tf.variable_scope(scope) :
         x = avg_pooling(x, kernel=2, stride=2)
@@ -480,7 +426,8 @@ def discriminator_loss(type, real, fake, fake_random=None, content=False):
             if type == 'lsgan' :
                 real_loss = tf.reduce_mean(tf.squared_difference(real[i], 1.0))
                 fake_loss = tf.reduce_mean(tf.square(fake[i]))
-                fake_random_loss = tf.reduce_mean(tf.square(fake_random[i]))
+                # fake_random_loss = tf.reduce_mean(tf.square(fake_random[i]))
+				fake_random_loss = 0
 
             if type == 'gan' :
                 real_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_like(real[i]), logits=real[i]))
@@ -555,68 +502,6 @@ def contrastive_loss(model1, model2, y, margin):
 	dissimilarity = (1 - y) * tf.square(tf.maximum((margin - distance), 0))        # give penalty to dissimilar label if the distance is bigger than margin
 
 	return tf.reduce_mean(dissimilarity + similarity) / 2
-
-
-def get_center_loss(features, labels, alpha, num_classes):
-    """获取center loss及center的更新op
-
-    Arguments:
-        features: Tensor,表征样本特征,一般使用某个fc层的输出,shape应该为[batch_size, feature_length].
-        labels: Tensor,表征样本label,非one-hot编码,shape应为[batch_size].
-        alpha: 0-1之间的数字,控制样本类别中心的学习率,细节参考原文.
-        num_classes: 整数,表明总共有多少个类别,网络分类输出有多少个神经元这里就取多少.
-
-    Return：
-        loss: Tensor,可与softmax loss相加作为总的loss进行优化.
-        centers: Tensor,存储样本中心值的Tensor，仅查看样本中心存储的具体数值时有用.
-        centers_update_op: op,用于更新样本中心的op，在训练时需要同时运行该op，否则样本中心不会更新
-    """
-    # 获取特征的维数，例如256维
-    len_features = features.get_shape()[1]
-    # 建立一个Variable,shape为[num_classes, len_features]，用于存储整个网络的样本中心，
-    # 设置trainable=False是因为样本中心不是由梯度进行更新的
-    centers = tf.get_variable('centers', [num_classes, len_features], dtype=tf.float32,
-                              initializer=tf.constant_initializer(0), trainable=False)
-    # 将label展开为一维的，输入如果已经是一维的，则该动作其实无必要
-    labels = tf.reshape(labels, [-1])
-
-    # 根据样本label,获取mini-batch中每一个样本对应的中心值
-    centers_batch = tf.gather(centers, labels)
-
-    # 计算loss
-    loss = tf.nn.l2_loss(features - centers_batch)
-
-    # 当前mini-batch的特征值与它们对应的中心值之间的差
-    diff = centers_batch - features
-
-    # 获取mini-batch中同一类别样本出现的次数,了解原理请参考原文公式(4)
-    unique_label, unique_idx, unique_count = tf.unique_with_counts(labels)
-    appear_times = tf.gather(unique_count, unique_idx)
-    appear_times = tf.reshape(appear_times, [-1, 1])
-
-    diff = diff / tf.cast((1 + appear_times), tf.float32)
-    diff = alpha * diff
-
-    centers_update_op = tf.scatter_sub(centers, labels, diff)
-
-    return loss, centers, centers_update_op
-
-def centerloss(features, label, alfa, num_classes):
-    """Center loss based on the paper "A Discriminative Feature Learning Approach for Deep Face Recognition"
-       (http://ydwen.github.io/papers/WenECCV16.pdf)
-    """
-    nrof_features = features.get_shape()[1]
-    centers = tf.get_variable('centers', [num_classes, nrof_features], dtype=tf.float32,
-        initializer=tf.constant_initializer(0), trainable=False)
-    label = tf.reshape(label, [-1])
-    centers_batch = tf.gather(centers, label)
-    diff = (1 - alfa) * (centers_batch - features)
-    centers = tf.scatter_sub(centers, label, diff)
-    with tf.control_dependencies([centers]):
-        loss = tf.reduce_mean(tf.square(features - centers_batch))
-    return loss, centers
-
-
 
 def plot_confusion_matrix(cls_true, cls_pred, num_classes=8):    
     # Get the confusion matrix using sklearn.
@@ -700,73 +585,3 @@ def plot_embedding(ax, X, d):
     else:
         label = "target"
     ax.scatter(X[:, 0], X[:, 1], marker='.', color=plt.cm.bwr(d / 1.), label=label)
-
-
-
-
-
-
-##################################################################################
-# perceptual loss
-##################################################################################
-VGG_PATH = "/home/acm528_06/wei_zhong/DRIT_parkinglot/dataset/model/vgg19.mat"
-
-def total_variation_loss(layer):
-    shape = tf.shape(layer)
-    height = shape[1]
-    width = shape[2]
-    y = tf.slice(layer, [0, 0, 0, 0], tf.pack([-1, height - 1, -1, -1])) - tf.slice(layer, [0, 1, 0, 0], [-1, -1, -1, -1])
-    x = tf.slice(layer, [0, 0, 0, 0], tf.pack([-1, -1, width - 1, -1])) - tf.slice(layer, [0, 0, 1, 0],[-1, -1, -1, -1])
-    return tf.nn.l2_loss(x) / tf.to_float(tf.size(x)) + tf.nn.l2_loss(y) / tf.to_float(tf.size(y))
-
-# TODO: Figure out grams and batch sizes! Doesn't make sense ..
-def gram(layer):
-    shape = tf.shape(layer)
-    num_filters = shape[3]
-    size = tf.size(layer)
-    filters = tf.reshape(layer, tf.stack([-1, num_filters]))
-    gram = tf.matmul(filters, filters, transpose_a=True) / tf.to_float(size)
-
-    return gram
-    
-
-def get_style_features(style_images, style_layers):
-    with tf.Session() as sess:
-#        tf.reset_default_graph()
-        net, _ = vgg.net(VGG_PATH, style_images)
-        features = []
-        for layer in style_layers:
-            features.append(gram(net[layer]))
-#    tf.reset_default_graph()
-        with tf.Session() as sess:
-            return sess.run(features)
-
-def get_content_features(content_images, content_layers):
-    with tf.Session() as sess:
-        net, _ = vgg.net(VGG_PATH, content_images)
-        layers = []
-        for layer in content_layers:
-            layers.append(net[layer])
-        tf.reset_default_graph
-        with tf.Session() as sess:
-            return sess.run(layers + [content_images])
-
-def compute_content_loss(content_features_t, content_layers, net):
-    content_loss = 0
-    for content_features, layer in zip(content_features_t, content_layers):
-        layer_size = tf.size(content_features)
-        content_loss += tf.nn.l2_loss(net[layer] - content_features) / tf.to_float(layer_size)
-    content_loss = content_loss / len(content_layers)
-    
-    return content_loss
-
-
-def compute_style_loss(style_features_t, style_layers, net):
-    style_loss = 0
-    for style_gram, layer in zip(style_features_t, style_layers):
-        layer_size = tf.size(style_gram)
-        style_loss += tf.nn.l2_loss(gram(net[layer]) - style_gram) / tf.to_float(layer_size)
-        #style_loss += tf.sqrt(tf.reduce_sum(tf.pow(gram(net[layer]) - style_gram, 2)))
-    style_loss =  style_loss / len(style_layers)
-    
-    return style_loss
