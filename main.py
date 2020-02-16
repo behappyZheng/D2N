@@ -1,8 +1,6 @@
 import tensorflow as tf
 from Domain_Adaptation import Parking_lot
 from Domain_Adaptation_test import Parking_lot_test
-
-from add_perceptual import Parking_lot_perce
 import argparse
 from utils import *
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
