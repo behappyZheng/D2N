@@ -6,4 +6,5 @@
 Tensorflow 1.8
 Python 3.6
 
-# Usage
+# Architecture
+<img src='./figure/parking_lot.png' width="800px">
