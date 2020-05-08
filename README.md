@@ -7,4 +7,4 @@ Tensorflow 1.8
 Python 3.6
 
 # Architecture
-<img src='./figure/parking_lot.png' width="800px">
+<img src='./figure/parkinglot_img.png' width="900px">
