@@ -1,6 +1,5 @@
-# D2N
+# D2NA
 # Project Title
-
 D2NA: DAY-TO-NIGHT ADAPTATION FOR VISION BASED PARKING MANAGEMENT SYSTEM
 https://ieeexplore.ieee.org/document/9053567 (ICASSP 2020)
  
